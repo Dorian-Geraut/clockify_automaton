@@ -122,6 +122,25 @@ def _compute_slots(
     return slots
 
 
+def _fill_slots(
+    client: ClockifyClient,
+    slots: list,
+    date: datetime.date,
+    day_name: str,
+    error_label: str,
+) -> tuple[int, bool]:
+    created = 0
+    error_occurred = False
+    for pid, slot_start, slot_end in slots:
+        try:
+            client.create_entry(pid, slot_start, slot_end)
+            created += 1
+        except ClockifyError as e:
+            print(f"  {date} ({day_name[:3].title()}) — {error_label}: {e}")
+            error_occurred = True
+    return created, error_occurred
+
+
 def run(config: Config) -> None:
     client = ClockifyClient(config.api_key)
 
@@ -172,55 +191,6 @@ def run(config: Config) -> None:
             current_date += datetime.timedelta(days=1)
             continue
 
-        # Off days: fill with a single "Not working" entry spanning the full working day
-        if current_date in config.off_days:
-            try:
-                existing_entries = client.get_entries_for_day(current_date, config.timezone)
-            except ClockifyError as e:
-                print(f"  {current_date} ({day_name[:3].title()}) — error fetching entries: {e}")
-                current_date += datetime.timedelta(days=1)
-                continue
-
-            existing_project_ids = {
-                e.get("projectId") for e in existing_entries if e.get("projectId")
-            }
-            if not_working_id in existing_project_ids:
-                print(
-                    f"  {current_date} ({day_name[:3].title()}) "
-                    f"— off day, already filled, skipped"
-                )
-            else:
-                tz = config.timezone
-                day_start = datetime.datetime(
-                    current_date.year, current_date.month, current_date.day,
-                    config.working_days.start_time.hour,
-                    config.working_days.start_time.minute,
-                    config.working_days.start_time.second,
-                    tzinfo=tz,
-                )
-                day_end = datetime.datetime(
-                    current_date.year, current_date.month, current_date.day,
-                    config.working_days.end_time.hour,
-                    config.working_days.end_time.minute,
-                    config.working_days.end_time.second,
-                    tzinfo=tz,
-                )
-                try:
-                    client.create_entry(not_working_id, day_start, day_end)
-                    print(
-                        f"  {current_date} ({day_name[:3].title()}) "
-                        f"— off day, filled with {NOT_WORKING_PROJECT!r}"
-                    )
-                    stats["entries_created"] += 1
-                except ClockifyError as e:
-                    print(
-                        f"  {current_date} ({day_name[:3].title()}) "
-                        f"— error creating off-day entry: {e}"
-                    )
-            stats["days_off"] += 1
-            current_date += datetime.timedelta(days=1)
-            continue
-
         # Fetch existing entries to detect conflicts
         try:
             existing_entries = client.get_entries_for_day(current_date, config.timezone)
@@ -233,48 +203,57 @@ def run(config: Config) -> None:
             e.get("projectId") for e in existing_entries if e.get("projectId")
         }
 
-        projects_to_fill = []
-        skipped_projects = []
-        for p in config.projects:
-            pid = project_ids[p.name]
-            if pid in existing_project_ids:
-                skipped_projects.append(p.name)
+        if current_date in config.off_days:
+            if not_working_id in existing_project_ids:
+                print(
+                    f"  {current_date} ({day_name[:3].title()}) "
+                    f"— off day, already filled, skipped"
+                )
             else:
-                projects_to_fill.append((pid, p.weight))
+                slots = _compute_slots(current_date, config, [(not_working_id, 1)])
+                created, error_occurred = _fill_slots(
+                    client, slots, current_date, day_name, "error creating off-day entry"
+                )
+                if not error_occurred:
+                    print(
+                        f"  {current_date} ({day_name[:3].title()}) "
+                        f"— off day, filled with {NOT_WORKING_PROJECT!r}"
+                    )
+                    stats["entries_created"] += created
+            stats["days_off"] += 1
+        else:
+            projects_to_fill = []   # projects with no entry yet on this day → will be created
+            skipped_projects = []   # projects already filled on this day → logged but not touched
+            for p in config.projects:
+                pid = project_ids[p.name]
+                if pid in existing_project_ids:
+                    skipped_projects.append(p.name)
+                else:
+                    projects_to_fill.append((pid, p.weight))
 
-        if not projects_to_fill:
-            print(
-                f"  {current_date} ({day_name[:3].title()}) "
-                f"— all projects already filled, skipped"
-            )
-            stats["days_skipped"] += 1
-            current_date += datetime.timedelta(days=1)
-            continue
-
-        # Create entries
-        slots = _compute_slots(current_date, config, projects_to_fill)
-        created = 0
-        error_occurred = False
-        for pid, slot_start, slot_end in slots:
-            try:
-                client.create_entry(pid, slot_start, slot_end)
-                created += 1
-            except ClockifyError as e:
-                print(f"  {current_date} ({day_name[:3].title()}) — error creating entry: {e}")
-                error_occurred = True
-
-        if not error_occurred:
-            skip_note = (
-                f" (skipped existing: {', '.join(skipped_projects)})"
-                if skipped_projects
-                else ""
-            )
-            print(
-                f"  {current_date} ({day_name[:3].title()}) "
-                f"— {created} entr{'y' if created == 1 else 'ies'} created{skip_note}"
-            )
-            stats["days_filled"] += 1
-            stats["entries_created"] += created
+            if not projects_to_fill:
+                print(
+                    f"  {current_date} ({day_name[:3].title()}) "
+                    f"— all projects already filled, skipped"
+                )
+                stats["days_skipped"] += 1
+            else:
+                slots = _compute_slots(current_date, config, projects_to_fill)
+                created, error_occurred = _fill_slots(
+                    client, slots, current_date, day_name, "error creating entry"
+                )
+                if not error_occurred:
+                    skip_note = (
+                        f" (skipped existing: {', '.join(skipped_projects)})"
+                        if skipped_projects
+                        else ""
+                    )
+                    print(
+                        f"  {current_date} ({day_name[:3].title()}) "
+                        f"— {created} entr{'y' if created == 1 else 'ies'} created{skip_note}"
+                    )
+                    stats["days_filled"] += 1
+                    stats["entries_created"] += created
 
         current_date += datetime.timedelta(days=1)
 
