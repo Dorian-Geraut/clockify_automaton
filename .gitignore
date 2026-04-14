@@ -1,0 +1,21 @@
+# Virtual environment (root-level venv or .venv/)
+bin/
+include/
+lib/
+lib64
+share/
+pyvenv.cfg
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Personal config files (may contain API keys)
+my_config.json
+*.local.json

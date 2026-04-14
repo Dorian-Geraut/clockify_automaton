@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clockify-automaton"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = ["requests", "tzdata"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

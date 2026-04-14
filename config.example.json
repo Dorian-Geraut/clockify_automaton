@@ -1,0 +1,23 @@
+{
+  "api_key": "your_clockify_api_key_here",
+  "timezone": "Europe/Paris",
+  "date_range": {
+    "from": "2025-03-12",
+    "to": "2025-04-26"
+  },
+  "working_days": {
+    "days": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+    "start_time": "09:00",
+    "end_time": "17:00",
+    "number_of_worked_hours": "7:00"
+  },
+  "off_days": [
+    "2025-04-18",
+    "2025-04-21",
+    { "from": "2025-04-07", "to": "2025-04-11" }
+  ],
+  "projects": [
+    { "name": "Project Alpha", "weight": 3 },
+    { "name": "Project Beta", "weight": 1 }
+  ]
+}
