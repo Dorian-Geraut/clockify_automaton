@@ -23,13 +23,18 @@ class WorkingDays:
 
 
 @dataclass
+class DateRangeConfig:
+    start: datetime.date
+    end: datetime.date
+    projects: list  # list of ProjectConfig
+
+
+@dataclass
 class Config:
     api_key: str
-    date_range_start: datetime.date
-    date_range_end: datetime.date
+    date_ranges: list  # list of DateRangeConfig, sorted by start date
     working_days: WorkingDays
     off_days: frozenset
-    projects: list
     timezone: ZoneInfo
 
 
@@ -103,18 +108,60 @@ def load_config(path: str) -> Config:
     if not api_key:
         raise ValueError("'api_key' must not be empty")
 
-    # date_range
-    if "date_range" not in data:
-        raise ValueError("Missing required field: 'date_range'")
-    dr = data["date_range"]
-    if not isinstance(dr, dict) or "from" not in dr or "to" not in dr:
-        raise ValueError("'date_range' must be an object with 'from' and 'to' keys")
-    date_start = _parse_date(dr["from"], "date_range.from")
-    date_end = _parse_date(dr["to"], "date_range.to")
-    if date_start > date_end:
-        raise ValueError(
-            f"'date_range.from' ({date_start}) must be <= 'date_range.to' ({date_end})"
-        )
+    # date_ranges
+    if "date_ranges" not in data:
+        raise ValueError("Missing required field: 'date_ranges'")
+    if not isinstance(data["date_ranges"], list) or len(data["date_ranges"]) == 0:
+        raise ValueError("'date_ranges' must be a non-empty list")
+
+    date_ranges = []
+    for i, dr in enumerate(data["date_ranges"]):
+        if not isinstance(dr, dict):
+            raise ValueError(f"date_ranges[{i}] must be an object")
+        for key in ("from", "to", "projects"):
+            if key not in dr:
+                raise ValueError(f"date_ranges[{i}] is missing '{key}'")
+        dr_start = _parse_date(dr["from"], f"date_ranges[{i}].from")
+        dr_end = _parse_date(dr["to"], f"date_ranges[{i}].to")
+        if dr_start > dr_end:
+            raise ValueError(
+                f"date_ranges[{i}]: 'from' ({dr_start}) must be <= 'to' ({dr_end})"
+            )
+        if not isinstance(dr["projects"], list) or len(dr["projects"]) == 0:
+            raise ValueError(f"date_ranges[{i}].projects must be a non-empty list")
+        dr_projects = []
+        for j, p in enumerate(dr["projects"]):
+            if not isinstance(p, dict):
+                raise ValueError(f"date_ranges[{i}].projects[{j}] must be an object")
+            if "name" not in p:
+                raise ValueError(f"date_ranges[{i}].projects[{j}] is missing 'name'")
+            if "weight" not in p:
+                raise ValueError(f"date_ranges[{i}].projects[{j}] is missing 'weight'")
+            name = str(p["name"]).strip()
+            if not name:
+                raise ValueError(f"date_ranges[{i}].projects[{j}] 'name' must not be empty")
+            try:
+                weight = float(p["weight"])
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"date_ranges[{i}].projects[{j}] 'weight' must be a number, "
+                    f"got {p['weight']!r}"
+                )
+            if weight <= 0:
+                raise ValueError(
+                    f"date_ranges[{i}].projects[{j}] 'weight' must be positive, got {weight}"
+                )
+            dr_projects.append(ProjectConfig(name=name, weight=weight))
+        date_ranges.append(DateRangeConfig(start=dr_start, end=dr_end, projects=dr_projects))
+
+    # Validate no overlaps (sort by start date, then check consecutive pairs)
+    date_ranges.sort(key=lambda r: r.start)
+    for i in range(len(date_ranges) - 1):
+        if date_ranges[i].end >= date_ranges[i + 1].start:
+            raise ValueError(
+                f"date_ranges overlap: {date_ranges[i].start} → {date_ranges[i].end} "
+                f"overlaps with {date_ranges[i + 1].start} → {date_ranges[i + 1].end}"
+            )
 
     # working_days
     if "working_days" not in data:
@@ -171,31 +218,6 @@ def load_config(path: str) -> Config:
         raise ValueError("'off_days' must be a list")
     off_days = _expand_off_days(off_days_raw)
 
-    # projects
-    if "projects" not in data:
-        raise ValueError("Missing required field: 'projects'")
-    if not isinstance(data["projects"], list) or len(data["projects"]) == 0:
-        raise ValueError("'projects' must be a non-empty list")
-
-    projects = []
-    for i, p in enumerate(data["projects"]):
-        if not isinstance(p, dict):
-            raise ValueError(f"projects[{i}] must be an object")
-        if "name" not in p:
-            raise ValueError(f"projects[{i}] is missing 'name'")
-        if "weight" not in p:
-            raise ValueError(f"projects[{i}] is missing 'weight'")
-        name = str(p["name"]).strip()
-        if not name:
-            raise ValueError(f"projects[{i}] 'name' must not be empty")
-        try:
-            weight = float(p["weight"])
-        except (TypeError, ValueError):
-            raise ValueError(f"projects[{i}] 'weight' must be a number, got {p['weight']!r}")
-        if weight <= 0:
-            raise ValueError(f"projects[{i}] 'weight' must be positive, got {weight}")
-        projects.append(ProjectConfig(name=name, weight=weight))
-
     # timezone (optional, default UTC)
     tz_str = data.get("timezone", "UTC")
     try:
@@ -205,10 +227,8 @@ def load_config(path: str) -> Config:
 
     return Config(
         api_key=api_key,
-        date_range_start=date_start,
-        date_range_end=date_end,
+        date_ranges=date_ranges,
         working_days=working_days,
         off_days=off_days,
-        projects=projects,
         timezone=tz,
     )

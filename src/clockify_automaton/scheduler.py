@@ -165,11 +165,12 @@ def run(config: Config) -> None:
     except ClockifyError as e:
         print(f"  ✗ API error: {e}")
         sys.exit(1)
-    for p in config.projects:
+    all_project_names = sorted({p.name for dr in config.date_ranges for p in dr.projects})
+    for name in all_project_names:
         try:
-            pid = client.resolve_project_id(p.name)
-            project_ids[p.name] = pid
-            print(f"  ✓ {p.name!r}")
+            pid = client.resolve_project_id(name)
+            project_ids[name] = pid
+            print(f"  ✓ {name!r}")
         except ValueError as e:
             print(f"  ✗ {e}")
             sys.exit(1)
@@ -179,15 +180,26 @@ def run(config: Config) -> None:
 
     # Main loop
     stats = {"days_filled": 0, "entries_created": 0, "days_skipped": 0, "days_off": 0}
-    current_date = config.date_range_start
+    overall_start = min(dr.start for dr in config.date_ranges)
+    overall_end = max(dr.end for dr in config.date_ranges)
+    current_date = overall_start
 
-    print(f"\nFilling timesheets from {config.date_range_start} to {config.date_range_end}...\n")
+    print(f"\nFilling timesheets from {overall_start} to {overall_end}...\n")
 
-    while current_date <= config.date_range_end:
+    while current_date <= overall_end:
         day_name = _DAY_NAMES[current_date.weekday()]
 
         # Skip non-working days of the week silently
         if day_name not in config.working_days.days:
+            current_date += datetime.timedelta(days=1)
+            continue
+
+        # Skip days that fall between date ranges
+        active_range = next(
+            (dr for dr in config.date_ranges if dr.start <= current_date <= dr.end),
+            None,
+        )
+        if active_range is None:
             current_date += datetime.timedelta(days=1)
             continue
 
@@ -224,7 +236,7 @@ def run(config: Config) -> None:
         else:
             projects_to_fill = []   # projects with no entry yet on this day → will be created
             skipped_projects = []   # projects already filled on this day → logged but not touched
-            for p in config.projects:
+            for p in active_range.projects:
                 pid = project_ids[p.name]
                 if pid in existing_project_ids:
                     skipped_projects.append(p.name)
