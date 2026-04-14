@@ -193,7 +193,7 @@ def load_config(path: str) -> Config:
         hours=end_time.hour - start_time.hour,
         minutes=end_time.minute - start_time.minute,
         seconds=end_time.second - start_time.second,
-    )
+    )  # total wall-clock span from start_time to end_time, lunch included
     if "number_of_worked_hours" in wd:
         worked_hours = _parse_duration(
             wd["number_of_worked_hours"], "working_days.number_of_worked_hours"

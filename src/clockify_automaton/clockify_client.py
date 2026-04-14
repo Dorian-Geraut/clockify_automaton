@@ -16,9 +16,9 @@ class ClockifyClient:
             "X-Api-Key": api_key,
             "Content-Type": "application/json",
         })
-        self._user_id: str | None = None
-        self._workspace_id: str | None = None
-        self._projects_cache: list | None = None
+        self._user_id: str | None = None           # lazily populated by _init_user()
+        self._workspace_id: str | None = None      # lazily populated by _init_user()
+        self._projects_cache: list | None = None   # lazily populated by get_projects(), avoids repeated API calls
 
     def _request(self, method: str, path: str, **kwargs) -> object:
         url = f"{BASE_URL}{path}"
@@ -102,6 +102,22 @@ class ClockifyClient:
                 "projectId": project_id,
                 "start": _to_clockify_time(start),
                 "end": _to_clockify_time(end),
+            },
+        )
+
+    def submit_approval_request(self, week_start: datetime.date) -> dict:
+        """Submit a weekly approval request for the week starting on the given Monday."""
+        wid = self.get_workspace_id()
+        period_start = datetime.datetime(
+            week_start.year, week_start.month, week_start.day,
+            0, 0, 0, tzinfo=datetime.timezone.utc,
+        )
+        return self._request(
+            "POST",
+            f"/workspaces/{wid}/approval-requests",
+            json={
+                "period": "WEEKLY",
+                "periodStart": period_start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
             },
         )
 
