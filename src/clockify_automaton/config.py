@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import datetime
 from dataclasses import dataclass
@@ -26,7 +28,8 @@ class WorkingDays:
 class DateRangeConfig:
     start: datetime.date
     end: datetime.date
-    projects: list  # list of ProjectConfig
+    projects: list  # list of ProjectConfig (empty when a template is used)
+    template: str | None = None  # Clockify timesheet template name/ID, replicated week after week
 
 
 @dataclass
@@ -118,7 +121,7 @@ def load_config(path: str) -> Config:
     for i, dr in enumerate(data["date_ranges"]):
         if not isinstance(dr, dict):
             raise ValueError(f"date_ranges[{i}] must be an object")
-        for key in ("from", "to", "projects"):
+        for key in ("from", "to"):
             if key not in dr:
                 raise ValueError(f"date_ranges[{i}] is missing '{key}'")
         dr_start = _parse_date(dr["from"], f"date_ranges[{i}].from")
@@ -127,6 +130,20 @@ def load_config(path: str) -> Config:
             raise ValueError(
                 f"date_ranges[{i}]: 'from' ({dr_start}) must be <= 'to' ({dr_end})"
             )
+        has_projects = "projects" in dr
+        has_template = "template" in dr
+        if has_projects == has_template:
+            raise ValueError(
+                f"date_ranges[{i}] must have exactly one of 'projects' or 'template'"
+            )
+        if has_template:
+            template = str(dr["template"]).strip()
+            if not template:
+                raise ValueError(f"date_ranges[{i}].template must not be empty")
+            date_ranges.append(
+                DateRangeConfig(start=dr_start, end=dr_end, projects=[], template=template)
+            )
+            continue
         if not isinstance(dr["projects"], list) or len(dr["projects"]) == 0:
             raise ValueError(f"date_ranges[{i}].projects must be a non-empty list")
         dr_projects = []
