@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import datetime
+import time
 
 import requests
 
 BASE_URL = "https://api.clockify.me/api/v1"
+_MAX_RETRIES = 5  # retries on HTTP 429 (rate limit) before giving up
 
 
 class ClockifyError(Exception):
@@ -19,18 +23,26 @@ class ClockifyClient:
         self._user_id: str | None = None           # lazily populated by _init_user()
         self._workspace_id: str | None = None      # lazily populated by _init_user()
         self._projects_cache: list | None = None   # lazily populated by get_projects(), avoids repeated API calls
+        self._templates_cache: list | None = None  # lazily populated by get_templates()
 
     def _request(self, method: str, path: str, **kwargs) -> object:
         url = f"{BASE_URL}{path}"
-        try:
-            resp = self._session.request(method, url, **kwargs)
-        except requests.RequestException as e:
-            raise ClockifyError(f"Network error: {e}") from e
-        if not resp.ok:
-            raise ClockifyError(
-                f"Clockify API error {resp.status_code} on {method} {path}: {resp.text}"
-            )
-        return resp.json()
+        for attempt in range(_MAX_RETRIES):
+            try:
+                resp = self._session.request(method, url, **kwargs)
+            except requests.RequestException as e:
+                raise ClockifyError(f"Network error: {e}") from e
+            if resp.status_code == 429 and attempt < _MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)  # exponential backoff: 1s, 2s, 4s, 8s
+                continue
+            if not resp.ok:
+                raise ClockifyError(
+                    f"Clockify API error {resp.status_code} on {method} {path}: {resp.text}"
+                )
+            if resp.status_code == 204 or not resp.content:
+                return None  # e.g. DELETE returns no body
+            return resp.json()
+        raise ClockifyError(f"Gave up after {_MAX_RETRIES} attempts on {method} {path}")
 
     def _init_user(self) -> None:
         if self._user_id is None:
@@ -72,6 +84,38 @@ class ClockifyClient:
             f"Available projects: {[p['name'] for p in projects]}"
         )
 
+    def get_project_name(self, project_id: str) -> str:
+        """Return the project name for an ID, or the ID itself if unknown."""
+        for p in self.get_projects():
+            if p["id"] == project_id:
+                return p["name"]
+        return project_id
+
+    def get_templates(self) -> list:
+        """Fetch the user's timesheet templates (as saved from the Clockify timesheet view)."""
+        if self._templates_cache is None:
+            wid = self.get_workspace_id()
+            self._templates_cache = self._request(
+                "GET",
+                f"/workspaces/{wid}/templates",
+                params={"page-size": 200},
+            )
+        return self._templates_cache
+
+    def resolve_template(self, name_or_id: str) -> dict:
+        """Resolve a timesheet template by name (case-insensitive) or ID."""
+        templates = self.get_templates()
+        for t in templates:
+            if t["name"].lower() == name_or_id.lower():
+                return t
+        for t in templates:
+            if t["id"] == name_or_id:
+                return t
+        raise ValueError(
+            f"Template not found: {name_or_id!r}. "
+            f"Available templates: {[t['name'] for t in templates]}"
+        )
+
     def get_entries_for_day(self, date: datetime.date, tz) -> list:
         """Fetch all time entries for a given day (in the user's timezone)."""
         wid = self.get_workspace_id()
@@ -91,19 +135,63 @@ class ClockifyClient:
         )
 
     def create_entry(
-        self, project_id: str, start: datetime.datetime, end: datetime.datetime
+        self,
+        project_id: str,
+        start: datetime.datetime,
+        end: datetime.datetime,
+        description: str = "",
+        task_id: str | None = None,
+        tag_ids: list | None = None,
+        billable: bool | None = None,
     ) -> dict:
         """Create a time entry for the given project and time range."""
         wid = self.get_workspace_id()
-        return self._request(
-            "POST",
-            f"/workspaces/{wid}/time-entries",
-            json={
-                "projectId": project_id,
-                "start": _to_clockify_time(start),
-                "end": _to_clockify_time(end),
-            },
-        )
+        payload = {
+            "projectId": project_id,
+            "start": _to_clockify_time(start),
+            "end": _to_clockify_time(end),
+        }
+        if description:
+            payload["description"] = description
+        if task_id:
+            payload["taskId"] = task_id
+        if tag_ids:
+            payload["tagIds"] = list(tag_ids)
+        if billable is not None:
+            payload["billable"] = billable
+        return self._request("POST", f"/workspaces/{wid}/time-entries", json=payload)
+
+    def update_entry(
+        self,
+        entry_id: str,
+        project_id: str,
+        start: datetime.datetime,
+        end: datetime.datetime,
+        description: str = "",
+        task_id: str | None = None,
+        tag_ids: list | None = None,
+        billable: bool | None = None,
+    ) -> dict:
+        """Replace an existing time entry's project and time range (PUT semantics)."""
+        wid = self.get_workspace_id()
+        payload = {
+            "projectId": project_id,
+            "start": _to_clockify_time(start),
+            "end": _to_clockify_time(end),
+            "description": description or "",
+        }
+        if task_id:
+            payload["taskId"] = task_id
+        if tag_ids:
+            payload["tagIds"] = list(tag_ids)
+        if billable is not None:
+            payload["billable"] = billable
+        return self._request("PUT", f"/workspaces/{wid}/time-entries/{entry_id}", json=payload)
+
+    def delete_entry(self, entry_id: str) -> None:
+        """Delete a time entry."""
+        wid = self.get_workspace_id()
+        self._request("DELETE", f"/workspaces/{wid}/time-entries/{entry_id}")
 
     def submit_approval_request(self, week_start: datetime.date) -> dict:
         """Submit a weekly approval request for the week starting on the given Monday."""

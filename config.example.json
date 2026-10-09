@@ -17,6 +17,11 @@
         { "name": "Project Alpha", "weight": 1 },
         { "name": "Project Gamma", "weight": 2 }
       ]
+    },
+    {
+      "from": "2026-05-04",
+      "to": "2026-06-30",
+      "template": "Classic week"
     }
   ],
   "working_days": {
